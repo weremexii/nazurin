@@ -15,7 +15,7 @@ OD_RF_TOKEN = environ.get('OD_RF_TOKEN',
 OD_DOCUMENT = 'onedrive'
 
 class OneDrive(object):
-    """Onedrive driver."""
+    """OneDrive driver."""
     db = Database().driver()
     collection = db.collection(NAZURIN_DATA)
     document = collection.document(OD_DOCUMENT)
@@ -25,31 +25,41 @@ class OneDrive(object):
     expires_at = 0
     folder_id = None
 
-    def store(self, files):
-        # https://docs.microsoft.com/zh-cn/graph/api/driveitem-put-content?view=graph-rest-1.0&tabs=http
+    def upload(self, file):
         # https://docs.microsoft.com/zh-cn/graph/api/driveitem-createuploadsession?view=graph-rest-1.0
+        file.size = path.getsize(file.path)
+        # create drive item
+        create_file_url = 'https://graph.microsoft.com/v1.0/me/drive/items/{parent_id}/children'.format(
+            parent_id=self.folder_id)
+        body = {
+            "name": file.name,
+            "size": file.size,
+            "file": {},
+            "@microsoft.graph.conflictBehavior": "replace"
+        }
+        response = self._request('POST', create_file_url, json=body)
+        # create upload session
+        create_session_url = 'https://graph.microsoft.com/v1.0/me/drive/items/{item_id}/createUploadSession'.format(
+            item_id=response['id'])
+        response = self._request('POST', create_session_url)
+        # upload
+        header = {
+            'Content-Range':
+            'bytes 0-{end}/{size}'.format(end=file.size - 1, size=file.size)
+        }
+        with open(file.path, mode='rb') as data:
+            self._request('PUT',
+                          response['uploadUrl'],
+                          headers=header,
+                          data=data)
+
+    def store(self, files):
         self.requireAuth()
         if not self.folder_id:
             self.getDestination()
 
         for item in files:
-            # create file for upload
-            create_file_url = 'https://graph.microsoft.com/v1.0/me/drive/items/{parent_id}/children'.format(
-                parent_id=self.folder_id)
-            body = {"name": item.name, "file": {}, "@microsoft.graph.conflictBehavior": "replace"}
-            response = self._request('POST', create_file_url, json=body)
-            # create session for upload
-            create_session_url = 'https://graph.microsoft.com/v1.0/me/drive/items/{item_id}/createUploadSession'.format(
-                item_id=response['id'])
-            response = self._request('POST', create_session_url)
-            # upload
-            if response.get('uploadUrl'):
-                item_size = path.getsize(item.path)
-                header = {
-                    'Content-Range': 'bytes 0-{end}/{size}'.format(end=item_size-1, size=item_size)
-                }
-                with open(item.path, mode='rb') as file:
-                    self._request('PUT', response['uploadUrl'], headers=header, data=file)
+            self.upload(item)
 
     def findFolder(self, name):
         self.requireAuth()
@@ -62,7 +72,7 @@ class OneDrive(object):
                 return folder['id']
         return None
 
-    def createFolder(self, name):
+    def createFolder(self, name: str):
         self.requireAuth()
         # https://docs.microsoft.com/zh-cn/graph/api/driveitem-post-children?view=graph-rest-1.0&tabs=http
         url = 'https://graph.microsoft.com/v1.0/me/drive/root/children'
@@ -85,7 +95,6 @@ class OneDrive(object):
                 self.access_token = credentials['access_token']
                 self.expires_at = credentials['expires_at']
                 logger.info('OneDrive logged in through cached tokens')
-                return
             else:
                 self.auth()  # Refresh access_token
         else:
